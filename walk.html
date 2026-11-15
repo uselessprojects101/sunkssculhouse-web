@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>schoolhouse walk test</title>
+<style>
+html,body{margin:0;background:#000;color:#ddd;font:15px/1.5 Arial,sans-serif;text-align:center}
+body{display:flex;flex-direction:column;align-items:center;min-height:100vh;padding:16px;box-sizing:border-box}
+canvas{width:min(100%,640px);aspect-ratio:8/5;image-rendering:pixelated;background:#000;margin-top:12px;outline:none}
+select,input,button{font:inherit;margin:4px}
+#msg{color:#999;min-height:1.5em}
+a{color:#9ab}
+</style>
+</head>
+<body>
+<h3>schoolhouse walk test</h3>
+<div>pick the sonic folder from your cd (the one that has map and tex inside)</div>
+<div><input type="file" id="folder" webkitdirectory multiple></div>
+<div><select id="lvl"></select><button id="go">load level</button></div>
+<div id="msg"></div>
+<canvas id="c" width="320" height="200" tabindex="0"></canvas>
+<div style="color:#999;margin-top:8px">arrows or wasd to move, q and e to sidestep</div>
+<div style="margin-top:8px"><a href="index.html">back to the file viewer</a></div>
+<script>
+const W=320,H=200;
+
+function decodePCX(b){
+  const v=new DataView(b.buffer,b.byteOffset,b.byteLength);
+  if(b[0]!==10||b[3]!==8||b[65]!==1)throw new Error('unsupported pcx');
+  const w=v.getUint16(8,true)-v.getUint16(4,true)+1;
+  const h=v.getUint16(10,true)-v.getUint16(6,true)+1;
+  const bpl=v.getUint16(66,true);
+  const idx=new Uint8Array(w*h);
+  let p=128;
+  for(let y=0;y<h;y++){
+    let x=0;
+    while(x<bpl){
+      let c=b[p++],n=1;
+      if((c&192)===192){n=c&63;c=b[p++]}
+      for(let i=0;i<n;i++,x++)if(x<w)idx[y*w+x]=c;
+    }
+  }
+  return {w,h,idx,pal:b.subarray(b.length-768)};
+}
+
+function toRGBA(t){
+  const out=new Uint32Array(t.w*t.h);
+  for(let i=0;i<out.length;i++){
+    const c=t.idx[i]*3;
+    out[i]=0xff000000|(t.pal[c+2]<<16)|(t.pal[c+1]<<8)|t.pal[c];
+  }
+  return out;
+}
+
+function parseBlk(text){
+  const info={floorIdx:0,ceilIdx:0,startX:1,startY:1,heading:0,fov:1,blocks:[]};
+  let mode='';
+  for(const raw of text.split(/\r?\n/)){
+    const line=raw.trim();
+    if(!line||line[0]==='\x1a')continue;
+    if(line[0]==='#'){
+      if(line.includes('N_WALL'))mode='block';
+      else if(line.includes('BASE')&&line.includes('VIEWS'))mode='thing';
+      else if(line.includes('SFX---'))mode='sfx';
+      else if(line.includes('INC_WALL'))mode='cyc';
+      continue;
+    }
+    if(mode===''){
+      const m=line.match(/^(.*?)\s*:\s*(.*)$/);
+      if(!m)continue;
+      const k=m[1].trim(),v=parseFloat(m[2]);
+      if(k.startsWith('Floor color'))info.floorIdx=v;
+      else if(k.startsWith('Ceiling color'))info.ceilIdx=v;
+      else if(k.startsWith('Player start x'))info.startX=v;
+      else if(k.startsWith('Player start y'))info.startY=v;
+      else if(k.startsWith('Player start heading'))info.heading=v;
+      else if(k.startsWith('Field of View'))info.fov=v;
+    }else if(mode==='block'){
+      const nums=[];
+      for(const t of line.split(/\s+/)){
+        if(t[0]==="'")break;
+        nums.push(Number(t));
+      }
+      if(nums.length>=20&&nums.every(n=>!isNaN(n))){
+        info.blocks[nums[0]]={shape:nums[1],flags:nums[2],n:nums[3],e:nums[4],s:nums[5],w:nums[6],ceil:nums[7],floor:nums[8],bot:nums[15],top:nums[16]};
+      }
+    }
+  }
+  return info;
+}
+
+function buildLevel(info,mapBytes,texBytes){
+  const grid=decodePCX(mapBytes);
+  const tex=new Map();
+  for(const [k,v] of texBytes){
+    try{
+      const t=decodePCX(v);
+      tex.set(k,{w:t.w,h:t.h,px:toRGBA(t),pal:t.pal});
+    }catch(e){}
+  }
+  let pal=null;
+  for(const t of tex.values()){pal=t.pal;break}
+  const color=i=>{
+    if(!pal)return 0xff808080;
+    const c=i*3;
+    return 0xff000000|(pal[c+2]<<16)|(pal[c+1]<<8)|pal[c];
+  };
+  const fov=info.fov>3.2?info.fov*Math.PI/180:info.fov;
+  return {info,grid,tex,fov,floorColor:color(info.floorIdx),ceilColor:color(info.ceilIdx)};
+}
+
+function blockAt(L,x,y){
+  if(x<0||y<0||x>=L.grid.w||y>=L.grid.h)return null;
+  return L.info.blocks[L.grid.idx[y*L.grid.w+x]]||null;
+}
+
+function solid(L,x,y){
+  if(x<0||y<0||x>=L.grid.w||y>=L.grid.h)return true;
+  const b=L.info.blocks[L.grid.idx[y*L.grid.w+x]];
+  return !!b&&b.shape!==0&&b.shape!==4;
+}
+
+function shade(c,f){
+  const r=(c&255)*f,g=((c>>8)&255)*f,b=((c>>16)&255)*f;
+  return 0xff000000|((b|0)<<16)|((g|0)<<8)|(r|0);
+}
+
+function flatPixel(L,panel,fx,fy,fallback){
+  const t=panel>=0?L.tex.get(panel):null;
+  if(!t)return fallback;
+  const tu=Math.floor((fx-Math.floor(fx))*t.w),tv=Math.floor((fy-Math.floor(fy))*t.h);
+  return t.px[tv*t.w+tu];
+}
+
+function render(buf,s,L){
+  const dirX=Math.cos(s.a),dirY=-Math.sin(s.a);
+  const pl=Math.tan(L.fov/2),plX=-dirY*pl,plY=dirX*pl;
+  const scale=(W/2)/pl,ch=1,hz=H/2;
+  for(let x=0;x<W;x++){
+    const cx=2*x/W-1,rx=dirX+plX*cx,ry=dirY+plY*cx;
+    let mx=Math.floor(s.x),my=Math.floor(s.y);
+    const ddx=Math.abs(1/rx),ddy=Math.abs(1/ry);
+    let stx,sty,sdx,sdy;
+    if(rx<0){stx=-1;sdx=(s.x-mx)*ddx}else{stx=1;sdx=(mx+1-s.x)*ddx}
+    if(ry<0){sty=-1;sdy=(s.y-my)*ddy}else{sty=1;sdy=(my+1-s.y)*ddy}
+    let side=0,guard=0;
+    while(guard++<400){
+      if(sdx<sdy){sdx+=ddx;mx+=stx;side=0}else{sdy+=ddy;my+=sty;side=1}
+      if(solid(L,mx,my))break;
+    }
+    let perp=side===0?sdx-ddx:sdy-ddy;
+    if(perp<0.02)perp=0.02;
+    const blk=blockAt(L,mx,my);
+    const face=side===0?(stx>0?'w':'e'):(sty>0?'n':'s');
+    const panel=blk?blk[face]:-1;
+    const t=panel>=0?L.tex.get(panel):null;
+    let wallX=side===0?s.y+perp*ry:s.x+perp*rx;
+    wallX-=Math.floor(wallX);
+    const zt=blk?blk.top/128:2,zb=blk?blk.bot/128:0;
+    const yT=hz-(zt-ch)*scale/perp,yB=hz-(zb-ch)*scale/perp;
+    const y0=Math.max(0,Math.ceil(yT)),y1=Math.min(H-1,Math.floor(yB));
+    for(let y=0;y<Math.min(y0,H);y++){
+      const d=hz-y-0.5;
+      if(d<=0){buf[y*W+x]=L.ceilColor;continue}
+      const dist=(2-ch)*scale/d,fx=s.x+dist*rx,fy=s.y+dist*ry;
+      const b2=blockAt(L,Math.floor(fx),Math.floor(fy));
+      buf[y*W+x]=shade(flatPixel(L,b2?b2.ceil:-1,fx,fy,L.ceilColor),0.8);
+    }
+    for(let y=y0;y<=y1;y++){
+      let c=0xff808080;
+      if(t){
+        let tu=Math.floor(wallX*t.w);
+        if((side===0&&rx>0)||(side===1&&ry<0))tu=t.w-1-tu;
+        let tv=Math.floor((y-yT)/(yB-yT)*t.h);
+        if(tv<0)tv=0;
+        if(tv>=t.h)tv=t.h-1;
+        c=t.px[tv*t.w+tu];
+      }
+      buf[y*W+x]=side===1?shade(c,0.75):c;
+    }
+    for(let y=Math.max(y1+1,0);y<H;y++){
+      const d=y+0.5-hz;
+      if(d<=0){buf[y*W+x]=L.floorColor;continue}
+      const dist=ch*scale/d,fx=s.x+dist*rx,fy=s.y+dist*ry;
+      const b2=blockAt(L,Math.floor(fx),Math.floor(fy));
+      buf[y*W+x]=flatPixel(L,b2?b2.floor:-1,fx,fy,L.floorColor);
+    }
+  }
+}
+
+function step(L,s,fwd,turn,strafe,dt){
+  s.a+=turn*dt*2.2;
+  const dx=Math.cos(s.a),dy=-Math.sin(s.a);
+  const sp=3*dt;
+  const mvx=(dx*fwd-dy*strafe)*sp,mvy=(dy*fwd+dx*strafe)*sp;
+  const r=0.25;
+  const nx=s.x+mvx;
+  if(!solid(L,Math.floor(nx+(mvx>0?r:-r)),Math.floor(s.y)))s.x=nx;
+  const ny=s.y+mvy;
+  if(!solid(L,Math.floor(s.x),Math.floor(ny+(mvy>0?r:-r))))s.y=ny;
+}
+
+function ui(){
+  const $=id=>document.getElementById(id);
+  const files=new Map();
+  const ctx=$('c').getContext('2d');
+  const img=ctx.createImageData(W,H);
+  const buf=new Uint32Array(img.data.buffer);
+  const keys=new Set();
+  let L=null,s=null,running=false,last=0;
+
+  $('folder').onchange=e=>{
+    files.clear();
+    for(const f of e.target.files)files.set(f.name.toLowerCase(),f);
+    const maps=[...files.keys()].filter(n=>n.endsWith('.map')&&files.has(n.replace(/\.map$/,'.blk'))).sort();
+    const sel=$('lvl');
+    sel.textContent='';
+    for(const n of maps){
+      const o=document.createElement('option');
+      o.value=n;
+      o.textContent=n.replace('.map','');
+      sel.appendChild(o);
+    }
+    $('msg').textContent=maps.length?maps.length+' levels found, pick one and press load level':'no levels found, pick the sonic folder from the cd';
+  };
+
+  $('go').onclick=async()=>{
+    const n=$('lvl').value;
+    if(!n)return;
+    $('msg').textContent='loading...';
+    try{
+      const blkText=await files.get(n.replace(/\.map$/,'.blk')).text();
+      const mapBytes=new Uint8Array(await files.get(n).arrayBuffer());
+      const info=parseBlk(blkText);
+      const need=new Set();
+      for(const b of info.blocks)if(b)for(const k of ['n','e','s','w','ceil','floor'])if(b[k]>=0)need.add(b[k]);
+      const texBytes=new Map();
+      for(const p of need){
+        const f=files.get('ah'+String(p).padStart(4,'0')+'.pcx');
+        if(f)texBytes.set(p,new Uint8Array(await f.arrayBuffer()));
+      }
+      L=buildLevel(info,mapBytes,texBytes);
+      s={x:info.startX+0.5,y:info.startY+0.5,a:info.heading*Math.PI*2/256};
+      $('msg').textContent='textures found: '+texBytes.size+' of '+need.size;
+      $('c').focus();
+      if(!running){running=true;requestAnimationFrame(frame)}
+    }catch(err){
+      $('msg').textContent='could not load: '+err.message;
+    }
+  };
+
+  window.addEventListener('keydown',e=>{
+    keys.add(e.code);
+    if(e.code.startsWith('Arrow')||e.code==='Space')e.preventDefault();
+  });
+  window.addEventListener('keyup',e=>keys.delete(e.code));
+
+  function frame(t){
+    const dt=Math.min(0.05,(t-last)/1000);
+    last=t;
+    if(L){
+      const fwd=(keys.has('ArrowUp')||keys.has('KeyW')?1:0)-(keys.has('ArrowDown')||keys.has('KeyS')?1:0);
+      const turn=(keys.has('ArrowLeft')||keys.has('KeyA')?1:0)-(keys.has('ArrowRight')||keys.has('KeyD')?1:0);
+      const strafe=(keys.has('KeyE')?1:0)-(keys.has('KeyQ')?1:0);
+      step(L,s,fwd,turn,strafe,dt);
+      render(buf,s,L);
+      ctx.putImageData(img,0,0);
+    }
+    requestAnimationFrame(frame);
+  }
+}
+ui();
+</script>
+</body>
+</html>
