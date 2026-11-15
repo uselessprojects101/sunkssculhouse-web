@@ -19,8 +19,9 @@ a{color:#9ab}
 <div><input type="file" id="folder" webkitdirectory multiple></div>
 <div><select id="lvl"></select><button id="go">load level</button></div>
 <div id="msg"></div>
+<div id="hud" style="min-height:1.5em;font-size:18px"></div>
 <canvas id="c" width="320" height="200" tabindex="0"></canvas>
-<div style="color:#999;margin-top:8px">arrows or wasd to move, q and e to sidestep, n to walk through walls on or off</div>
+<div style="color:#999;margin-top:8px">arrows or wasd to move, q and e to sidestep, space to answer when you are close to a number, n to walk through walls</div>
 <div style="margin-top:8px"><a href="index.html">back to the file viewer</a></div>
 <script>
 const W=320,H=200;
@@ -54,7 +55,7 @@ function toRGBA(t){
 }
 
 function parseBlk(text){
-  const info={floorIdx:0,ceilIdx:0,startX:1,startY:1,heading:0,fov:1,blocks:[]};
+  const info={floorIdx:0,ceilIdx:0,startX:1,startY:1,heading:0,fov:1,nProb:0,tries:3,prb:'',blocks:[]};
   let mode='';
   for(const raw of text.split(/\r?\n/)){
     const line=raw.trim();
@@ -76,6 +77,9 @@ function parseBlk(text){
       else if(k.startsWith('Player start y'))info.startY=v;
       else if(k.startsWith('Player start heading'))info.heading=v;
       else if(k.startsWith('Field of View'))info.fov=v;
+      else if(k.startsWith('Number of problems'))info.nProb=v;
+      else if(k.startsWith('Number of tries'))info.tries=v;
+      else if(k.startsWith('Name of problem'))info.prb=m[2].replace(/'/g,'').trim();
     }else if(mode==='block'||mode==='thing'){
       const nums=[];
       for(const t of line.split(/\s+/)){
@@ -200,7 +204,7 @@ function render(buf,s,L){
       let c=0xff808080;
       if(t){
         let tu=Math.floor(wallX*t.w);
-        if((side===0&&rx>0)||(side===1&&ry<0))tu=t.w-1-tu;
+        if((side===0&&rx<0)||(side===1&&ry>0))tu=t.w-1-tu;
         let tv=Math.floor((y-yT)/(yB-yT)*t.h);
         if(tv<0)tv=0;
         if(tv>=t.h)tv=t.h-1;
@@ -225,7 +229,7 @@ function drawSprites(buf,s,L,dirX,dirY,plX,plY,pl,scale){
   for(const sp of L.sprites){
     const dx=sp.x-s.x,dy=sp.y-s.y;
     const z=dx*dirX+dy*dirY;
-    if(z>0.1&&z<30)list.push({sp,dx,dy,z});
+    if(!sp.hidden&&z>0.1&&z<30)list.push({sp,dx,dy,z});
   }
   list.sort((a,b)=>b.z-a.z);
   for(const it of list){
@@ -264,6 +268,103 @@ function step(L,s,fwd,turn,strafe,dt,ghost){
   if(ghost||!blocked(L,Math.floor(s.x),Math.floor(ny+(mvy>0?r:-r))))s.y=ny;
 }
 
+function parsePRB(text){
+  const out=[];
+  for(const raw of text.split(/\r?\n/)){
+    const m=raw.trim().match(/^'(.*)'\s+\d+/);
+    if(!m)continue;
+    const i=m[1].lastIndexOf(':');
+    if(i<0)continue;
+    out.push({q:m[1].slice(0,i).trim(),a:m[1].slice(i+1).trim()});
+  }
+  return out;
+}
+
+function pickProblems(all,n,valid){
+  const pool=all.filter(p=>valid.has(p.a));
+  for(let i=pool.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    const t=pool[i];pool[i]=pool[j];pool[j]=t;
+  }
+  return pool.slice(0,n);
+}
+
+function wrapText(g,text,max){
+  const lines=[];
+  let cur='';
+  for(const w of text.split(' ')){
+    const t=cur?cur+' '+w:w;
+    if(g.measureText(t).width>max&&cur){lines.push(cur);cur=w}else cur=t;
+  }
+  lines.push(cur);
+  return lines;
+}
+
+function makeBoard(text,family,mk){
+  const c=mk(384,256),g=c.getContext('2d');
+  g.fillStyle='#0f3b27';
+  g.fillRect(0,0,384,256);
+  g.strokeStyle='#caa46a';
+  g.lineWidth=6;
+  g.strokeRect(3,3,378,250);
+  g.fillStyle='#ffffff';
+  g.textAlign='center';
+  g.textBaseline='middle';
+  let size=80,lines=[text];
+  for(;size>=16;size-=4){
+    g.font=size+'px '+family;
+    lines=wrapText(g,text,350);
+    if(lines.length*size*1.15<=230&&lines.every(l=>g.measureText(l).width<=350))break;
+  }
+  const lh=size*1.15,y0=128-(lines.length-1)*lh/2;
+  lines.forEach((ln,i)=>g.fillText(ln,192,y0+i*lh));
+  const parts=[];
+  for(let k=0;k<3;k++){
+    const d=g.getImageData(k*128,0,128,256);
+    parts.push({w:128,h:256,px:new Uint32Array(d.data.buffer.slice(0)),idx:null});
+  }
+  return parts;
+}
+
+function installBoard(L,base,text){
+  makeBoard(text,L.family,L.mk).forEach((t,k)=>L.tex.set(base+k,t));
+}
+
+function setupGame(L,probs){
+  L.game={probs,cur:0,tries:0,correct:0,over:false};
+  probs.forEach((p,i)=>installBoard(L,500+3*i,p.q));
+  if(probs.length)installBoard(L,1100,probs[0].q);
+}
+
+function tryAnswer(L,s){
+  const g=L.game;
+  if(!g||g.over)return '';
+  const dirX=Math.cos(s.a),dirY=-Math.sin(s.a);
+  let best=null,bd=1e9;
+  for(const sp of L.sprites){
+    if(sp.hidden||sp.b.kind!==1)continue;
+    const dx=sp.x-s.x,dy=sp.y-s.y,d=Math.hypot(dx,dy);
+    if(d<1.6&&dx*dirX+dy*dirY>0.4*d&&d<bd){best=sp;bd=d}
+  }
+  if(!best)return 'nothing here, get close to a number, face it and press space';
+  const p=g.probs[g.cur];
+  let msg;
+  if(best.b.str===p.a){
+    g.correct++;
+    best.hidden=true;
+    msg='correct!';
+  }else{
+    g.tries++;
+    if(g.tries<L.info.tries)return 'not that one, '+(L.info.tries-g.tries)+' tries left';
+    msg='out of tries, the answer was '+p.a;
+  }
+  g.cur++;
+  g.tries=0;
+  if(g.cur>=g.probs.length){g.over=true;return msg+' all done'}
+  installBoard(L,1100,g.probs[g.cur].q);
+  return msg;
+}
+
 function ui(){
   const $=id=>document.getElementById(id);
   const files=new Map();
@@ -272,6 +373,11 @@ function ui(){
   const buf=new Uint32Array(img.data.buffer);
   const keys=new Set();
   let L=null,s=null,running=false,last=0,ghost=false;
+
+  function hud(){
+    const g=L&&L.game;
+    $('hud').textContent=!g?'':(g.over?'done: '+g.correct+' of '+g.probs.length+' correct':'problem '+(g.cur+1)+' of '+g.probs.length+': '+g.probs[g.cur].q);
+  }
 
   $('folder').onchange=e=>{
     files.clear();
@@ -308,6 +414,25 @@ function ui(){
         if(f)texBytes.set(p,new Uint8Array(await f.arrayBuffer()));
       }
       L=buildLevel(info,mapBytes,texBytes);
+      L.family='Arial';
+      L.mk=(w,h)=>{const c=document.createElement('canvas');c.width=w;c.height=h;return c};
+      L.game=null;
+      const hasBoards=info.blocks.some(b=>b&&(b.kind===10||b.kind===11||b.kind===12));
+      const prbFile=info.prb?files.get(info.prb.toLowerCase()):null;
+      if(hasBoards&&prbFile){
+        const ttf=files.get('answhunt.ttf');
+        if(ttf){
+          try{
+            const face=new FontFace('answhunt',await ttf.arrayBuffer());
+            await face.load();
+            document.fonts.add(face);
+            L.family='answhunt, Arial';
+          }catch(e){}
+        }
+        const valid=new Set(L.sprites.filter(p=>p.b.kind===1).map(p=>p.b.str));
+        setupGame(L,pickProblems(parsePRB(await prbFile.text()),info.nProb||10,valid));
+      }
+      hud();
       s={x:info.startX+0.5,y:info.startY+0.5,a:info.heading*Math.PI*2/256};
       $('msg').textContent='textures found: '+texBytes.size+' of '+need.size+', things in level: '+L.sprites.length;
       $('c').focus();
@@ -320,6 +445,11 @@ function ui(){
   window.addEventListener('keydown',e=>{
     keys.add(e.code);
     if(e.code.startsWith('Arrow')||e.code==='Space')e.preventDefault();
+    if(e.code==='Space'&&!e.repeat&&L){
+      const r=tryAnswer(L,s);
+      if(r)$('msg').textContent=r;
+      hud();
+    }
     if(e.code==='KeyN'&&!e.repeat){
       ghost=!ghost;
       $('msg').textContent=ghost?'walking through walls: on':'walking through walls: off';
