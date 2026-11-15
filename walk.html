@@ -20,7 +20,7 @@ a{color:#9ab}
 <div><select id="lvl"></select><button id="go">load level</button></div>
 <div id="msg"></div>
 <canvas id="c" width="320" height="200" tabindex="0"></canvas>
-<div style="color:#999;margin-top:8px">arrows or wasd to move, q and e to sidestep</div>
+<div style="color:#999;margin-top:8px">arrows or wasd to move, q and e to sidestep, n to walk through walls on or off</div>
 <div style="margin-top:8px"><a href="index.html">back to the file viewer</a></div>
 <script>
 const W=320,H=200;
@@ -76,15 +76,26 @@ function parseBlk(text){
       else if(k.startsWith('Player start y'))info.startY=v;
       else if(k.startsWith('Player start heading'))info.heading=v;
       else if(k.startsWith('Field of View'))info.fov=v;
-    }else if(mode==='block'){
+    }else if(mode==='block'||mode==='thing'){
       const nums=[];
       for(const t of line.split(/\s+/)){
         if(t[0]==="'")break;
         nums.push(Number(t));
       }
-      if(nums.length>=20&&nums.every(n=>!isNaN(n))){
-        info.blocks[nums[0]]={shape:nums[1],flags:nums[2],n:nums[3],e:nums[4],s:nums[5],w:nums[6],ceil:nums[7],floor:nums[8],bot:nums[15],top:nums[16]};
+      if(nums.length<20||!nums.every(n=>!isNaN(n)))continue;
+      const q=line.indexOf("'");
+      const str=q>=0?line.slice(q+1,line.lastIndexOf("'")):'';
+      if(mode==='block'){
+        info.blocks[nums[0]]={shape:nums[1],flags:nums[2],n:nums[3],e:nums[4],s:nums[5],w:nums[6],ceil:nums[7],floor:nums[8],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],str};
+      }else{
+        info.blocks[nums[0]]={shape:nums[1],flags:nums[2],thing:true,base:nums[3],under:nums[4],tw:nums[9],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],str,n:-1,e:-1,s:-1,w:-1,ceil:-1,floor:-1};
       }
+    }
+  }
+  for(const b of info.blocks){
+    if(b&&b.thing){
+      const u=info.blocks[b.under];
+      if(u){b.ceil=u.ceil;b.floor=u.floor}
     }
   }
   return info;
@@ -96,7 +107,7 @@ function buildLevel(info,mapBytes,texBytes){
   for(const [k,v] of texBytes){
     try{
       const t=decodePCX(v);
-      tex.set(k,{w:t.w,h:t.h,px:toRGBA(t),pal:t.pal});
+      tex.set(k,{w:t.w,h:t.h,px:toRGBA(t),idx:t.idx,pal:t.pal});
     }catch(e){}
   }
   let pal=null;
@@ -106,8 +117,15 @@ function buildLevel(info,mapBytes,texBytes){
     const c=i*3;
     return 0xff000000|(pal[c+2]<<16)|(pal[c+1]<<8)|pal[c];
   };
+  const sprites=[];
+  for(let y=0;y<grid.h;y++){
+    for(let x=0;x<grid.w;x++){
+      const b=info.blocks[grid.idx[y*grid.w+x]];
+      if(b&&b.thing&&tex.has(b.base))sprites.push({x:x+0.5,y:y+0.5,b});
+    }
+  }
   const fov=info.fov>3.2?info.fov*Math.PI/180:info.fov;
-  return {info,grid,tex,fov,floorColor:color(info.floorIdx),ceilColor:color(info.ceilIdx)};
+  return {info,grid,tex,sprites,fov,floorColor:color(info.floorIdx),ceilColor:color(info.ceilIdx)};
 }
 
 function blockAt(L,x,y){
@@ -115,10 +133,18 @@ function blockAt(L,x,y){
   return L.info.blocks[L.grid.idx[y*L.grid.w+x]]||null;
 }
 
-function solid(L,x,y){
+function opaque(L,x,y){
   if(x<0||y<0||x>=L.grid.w||y>=L.grid.h)return true;
   const b=L.info.blocks[L.grid.idx[y*L.grid.w+x]];
   return !!b&&b.shape!==0&&b.shape!==4;
+}
+
+function blocked(L,x,y){
+  if(x<0||y<0||x>=L.grid.w||y>=L.grid.h)return true;
+  const b=L.info.blocks[L.grid.idx[y*L.grid.w+x]];
+  if(!b||b.shape===0)return false;
+  if(b.shape===4)return (b.flags&2)!==0&&b.bot<128;
+  return true;
 }
 
 function shade(c,f){
@@ -132,6 +158,8 @@ function flatPixel(L,panel,fx,fy,fallback){
   const tu=Math.floor((fx-Math.floor(fx))*t.w),tv=Math.floor((fy-Math.floor(fy))*t.h);
   return t.px[tv*t.w+tu];
 }
+
+const zbuf=new Float32Array(W);
 
 function render(buf,s,L){
   const dirX=Math.cos(s.a),dirY=-Math.sin(s.a);
@@ -147,10 +175,11 @@ function render(buf,s,L){
     let side=0,guard=0;
     while(guard++<400){
       if(sdx<sdy){sdx+=ddx;mx+=stx;side=0}else{sdy+=ddy;my+=sty;side=1}
-      if(solid(L,mx,my))break;
+      if(opaque(L,mx,my))break;
     }
     let perp=side===0?sdx-ddx:sdy-ddy;
     if(perp<0.02)perp=0.02;
+    zbuf[x]=perp;
     const blk=blockAt(L,mx,my);
     const face=side===0?(stx>0?'w':'e'):(sty>0?'n':'s');
     const panel=blk?blk[face]:-1;
@@ -187,18 +216,52 @@ function render(buf,s,L){
       buf[y*W+x]=flatPixel(L,b2?b2.floor:-1,fx,fy,L.floorColor);
     }
   }
+  drawSprites(buf,s,L,dirX,dirY,plX,plY,pl,scale);
 }
 
-function step(L,s,fwd,turn,strafe,dt){
+function drawSprites(buf,s,L,dirX,dirY,plX,plY,pl,scale){
+  const hz=H/2,ch=1;
+  const list=[];
+  for(const sp of L.sprites){
+    const dx=sp.x-s.x,dy=sp.y-s.y;
+    const z=dx*dirX+dy*dirY;
+    if(z>0.1&&z<30)list.push({sp,dx,dy,z});
+  }
+  list.sort((a,b)=>b.z-a.z);
+  for(const it of list){
+    const b=it.sp.b,t=L.tex.get(b.base);
+    const sx=(W/2)*(1+(it.dx*plX+it.dy*plY)/(it.z*pl*pl));
+    const wpx=(b.tw/128)*scale/it.z;
+    const xl=sx-wpx/2,xr=sx+wpx/2;
+    const yT=hz-(b.top/128-ch)*scale/it.z,yB=hz-(b.bot/128-ch)*scale/it.z;
+    const y0=Math.max(0,Math.ceil(yT)),y1=Math.min(H-1,Math.floor(yB));
+    const xa=Math.max(0,Math.ceil(xl)),xb=Math.min(W-1,Math.floor(xr));
+    for(let x=xa;x<=xb;x++){
+      if(it.z>=zbuf[x])continue;
+      let tu=Math.floor((x-xl)/wpx*t.w);
+      if(tu<0)tu=0;
+      if(tu>=t.w)tu=t.w-1;
+      for(let y=y0;y<=y1;y++){
+        let tv=Math.floor((y-yT)/(yB-yT)*t.h);
+        if(tv<0)tv=0;
+        if(tv>=t.h)tv=t.h-1;
+        const i=tv*t.w+tu;
+        if(t.idx[i]!==0)buf[y*W+x]=t.px[i];
+      }
+    }
+  }
+}
+
+function step(L,s,fwd,turn,strafe,dt,ghost){
   s.a+=turn*dt*2.2;
   const dx=Math.cos(s.a),dy=-Math.sin(s.a);
   const sp=3*dt;
   const mvx=(dx*fwd-dy*strafe)*sp,mvy=(dy*fwd+dx*strafe)*sp;
   const r=0.25;
   const nx=s.x+mvx;
-  if(!solid(L,Math.floor(nx+(mvx>0?r:-r)),Math.floor(s.y)))s.x=nx;
+  if(ghost||!blocked(L,Math.floor(nx+(mvx>0?r:-r)),Math.floor(s.y)))s.x=nx;
   const ny=s.y+mvy;
-  if(!solid(L,Math.floor(s.x),Math.floor(ny+(mvy>0?r:-r))))s.y=ny;
+  if(ghost||!blocked(L,Math.floor(s.x),Math.floor(ny+(mvy>0?r:-r))))s.y=ny;
 }
 
 function ui(){
@@ -208,7 +271,7 @@ function ui(){
   const img=ctx.createImageData(W,H);
   const buf=new Uint32Array(img.data.buffer);
   const keys=new Set();
-  let L=null,s=null,running=false,last=0;
+  let L=null,s=null,running=false,last=0,ghost=false;
 
   $('folder').onchange=e=>{
     files.clear();
@@ -234,7 +297,11 @@ function ui(){
       const mapBytes=new Uint8Array(await files.get(n).arrayBuffer());
       const info=parseBlk(blkText);
       const need=new Set();
-      for(const b of info.blocks)if(b)for(const k of ['n','e','s','w','ceil','floor'])if(b[k]>=0)need.add(b[k]);
+      for(const b of info.blocks){
+        if(!b)continue;
+        for(const k of ['n','e','s','w','ceil','floor'])if(b[k]>=0)need.add(b[k]);
+        if(b.thing&&b.base>=0)need.add(b.base);
+      }
       const texBytes=new Map();
       for(const p of need){
         const f=files.get('ah'+String(p).padStart(4,'0')+'.pcx');
@@ -242,7 +309,7 @@ function ui(){
       }
       L=buildLevel(info,mapBytes,texBytes);
       s={x:info.startX+0.5,y:info.startY+0.5,a:info.heading*Math.PI*2/256};
-      $('msg').textContent='textures found: '+texBytes.size+' of '+need.size;
+      $('msg').textContent='textures found: '+texBytes.size+' of '+need.size+', things in level: '+L.sprites.length;
       $('c').focus();
       if(!running){running=true;requestAnimationFrame(frame)}
     }catch(err){
@@ -253,6 +320,10 @@ function ui(){
   window.addEventListener('keydown',e=>{
     keys.add(e.code);
     if(e.code.startsWith('Arrow')||e.code==='Space')e.preventDefault();
+    if(e.code==='KeyN'&&!e.repeat){
+      ghost=!ghost;
+      $('msg').textContent=ghost?'walking through walls: on':'walking through walls: off';
+    }
   });
   window.addEventListener('keyup',e=>keys.delete(e.code));
 
@@ -263,7 +334,7 @@ function ui(){
       const fwd=(keys.has('ArrowUp')||keys.has('KeyW')?1:0)-(keys.has('ArrowDown')||keys.has('KeyS')?1:0);
       const turn=(keys.has('ArrowLeft')||keys.has('KeyA')?1:0)-(keys.has('ArrowRight')||keys.has('KeyD')?1:0);
       const strafe=(keys.has('KeyE')?1:0)-(keys.has('KeyQ')?1:0);
-      step(L,s,fwd,turn,strafe,dt);
+      step(L,s,fwd,turn,strafe,dt,ghost);
       render(buf,s,L);
       ctx.putImageData(img,0,0);
     }
