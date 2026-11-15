@@ -1,10 +1,6 @@
 # progress
 
-## done
-- asset loader page (index.html): pick the game folder or a zip, shows pcx images, plays wav files
-
-## next
-- work out the SONIC.DAT format
-- work out the MAP, BLK and PRB level formats
-- convert HMI music to midi
-- avi (8-bit rle) cutscenes
+- index.html: pick the game folder, view pcx, play wav
+- walk.html: pick the cd sonic folder, walk around a level in 3d
+- needs the cd folder, SONIC.DAT is only partly decoded
+- next: answer blocks and problems, sound, actors
