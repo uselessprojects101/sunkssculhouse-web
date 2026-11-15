@@ -1,0 +1,18 @@
+# Never commit the game's own files: players supply them locally
+*.pcx
+*.wav
+*.avi
+*.hmi
+*.dat
+*.map
+*.blk
+*.prb
+*.ttf
+*.exe
+*.dll
+*.zip
+*.iso
+Setup ISO/
+Installed Files after setup/
+*:Zone.Identifier
+node_modules/

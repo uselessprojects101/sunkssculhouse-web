@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sonic's Schoolhouse – web port (asset loader)</title>
+<style>
+  body{font:14px system-ui,sans-serif;margin:0;background:#101418;color:#e8eaed;display:flex;height:100vh}
+  #side{width:300px;border-right:1px solid #2a3038;display:flex;flex-direction:column}
+  #top{padding:12px;border-bottom:1px solid #2a3038}
+  #top p{margin:6px 0;color:#9aa4b0;font-size:12px}
+  #list{flex:1;overflow:auto}
+  #list div{padding:4px 12px;cursor:pointer;white-space:nowrap;font-family:ui-monospace,monospace;font-size:12px}
+  #list div:hover{background:#1c232b}
+  #list div.sel{background:#254a7a}
+  #main{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:12px;overflow:auto}
+  canvas{max-width:100%;image-rendering:pixelated;background:#000}
+  #status{margin-top:8px;color:#9aa4b0;font-size:12px}
+</style>
+</head>
+<body>
+<div id="side">
+  <div id="top">
+    <b>Sonic's Schoolhouse</b>
+    <p>Load your own copy of the game. Nothing is uploaded; files stay in your browser.</p>
+    <input type="file" id="folder" webkitdirectory multiple><br>
+    <input type="file" id="zip" accept=".zip" style="margin-top:6px">
+  </div>
+  <div id="list"></div>
+</div>
+<div id="main">
+  <canvas id="c" width="640" height="480"></canvas>
+  <div id="status">Pick the game folder (or a .zip of it) to begin.</div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+const files = new Map();
+let audioCtx = null;
+const $ = id => document.getElementById(id);
+const status = t => $('status').textContent = t;
+function decodePCX(b) {
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  if (b[0] !== 10 || b[2] !== 1 || b[3] !== 8 || b[65] !== 1) throw new Error('Unsupported PCX');
+  const w = v.getUint16(8, true) - v.getUint16(4, true) + 1;
+  const h = v.getUint16(10, true) - v.getUint16(6, true) + 1;
+  const bpl = v.getUint16(66, true);
+  if (b[b.length - 769] !== 12) throw new Error('No 256-colour palette');
+  const pal = b.subarray(b.length - 768);
+  const px = new Uint8ClampedArray(w * h * 4);
+  let p = 128;
+  for (let y = 0; y < h; y++) {
+    let x = 0;
+    while (x < bpl) {
+      let c = b[p++], n = 1;
+      if ((c & 0xC0) === 0xC0) { n = c & 0x3F; c = b[p++]; }
+      for (let i = 0; i < n; i++, x++) {
+        if (x < w) {
+          const o = (y * w + x) * 4;
+          px[o] = pal[c * 3]; px[o + 1] = pal[c * 3 + 1]; px[o + 2] = pal[c * 3 + 2]; px[o + 3] = 255;
+        }
+      }
+    }
+  }
+  return new ImageData(px, w, h);
+}
+function addFile(path, getter) { files.set(path.replace(/\\/g, '/').toLowerCase(), getter); }
+
+$('folder').onchange = e => {
+  files.clear();
+  for (const f of e.target.files)
+    addFile(f.webkitRelativePath || f.name, async () => new Uint8Array(await f.arrayBuffer()));
+  refresh();
+};
+
+$('zip').onchange = async e => {
+  files.clear();
+  status('Reading zip…');
+  const zip = await JSZip.loadAsync(e.target.files[0]);
+  zip.forEach((path, entry) => {
+    if (!entry.dir) addFile(path, () => entry.async('uint8array'));
+  });
+  refresh();
+};
+
+function refresh() {
+  const list = $('list');
+  list.textContent = '';
+  const names = [...files.keys()].filter(n => /\.(pcx|wav)$/.test(n)).sort();
+  for (const n of names) {
+    const d = document.createElement('div');
+    d.textContent = n.split('/').slice(-2).join('/');
+    d.title = n;
+    d.onclick = () => { document.querySelectorAll('#list .sel').forEach(x => x.classList.remove('sel')); d.classList.add('sel'); open(n); };
+    list.appendChild(d);
+  }
+  status(`${files.size} files indexed, ${names.length} PCX/WAV assets. Click one.`);
+}
+
+async function open(name) {
+  try {
+    const data = await files.get(name)();
+    if (name.endsWith('.pcx')) {
+      const img = decodePCX(data);
+      const c = $('c'); c.width = img.width; c.height = img.height;
+      c.getContext('2d').putImageData(img, 0, 0);
+      status(`${name}: ${img.width}x${img.height}`);
+    } else {
+      audioCtx = audioCtx || new AudioContext();
+      const buf = await audioCtx.decodeAudioData(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+      const src = audioCtx.createBufferSource();
+      src.buffer = buf; src.connect(audioCtx.destination); src.start();
+      status(`${name}: ${buf.duration.toFixed(2)}s, ${buf.sampleRate} Hz`);
+    }
+  } catch (err) { status(`${name}: ${err.message}`); }
+}
+</script>
+</body>
+</html>
