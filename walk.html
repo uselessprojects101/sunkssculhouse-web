@@ -92,7 +92,7 @@ function parseBlk(text){
       if(mode==='block'){
         info.blocks[nums[0]]={shape:nums[1],flags:nums[2],n:nums[3],e:nums[4],s:nums[5],w:nums[6],ceil:nums[7],floor:nums[8],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],str};
       }else{
-        info.blocks[nums[0]]={shape:nums[1],flags:nums[2],thing:true,base:nums[3],under:nums[4],tw:nums[9],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],str,n:-1,e:-1,s:-1,w:-1,ceil:-1,floor:-1};
+        info.blocks[nums[0]]={shape:nums[1],flags:nums[2],thing:true,base:nums[3],under:nums[4],heading:nums[6],tw:nums[9],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],str,n:-1,e:-1,s:-1,w:-1,ceil:-1,floor:-1};
       }
     }
   }
@@ -147,8 +147,18 @@ function blocked(L,x,y){
   if(x<0||y<0||x>=L.grid.w||y>=L.grid.h)return true;
   const b=L.info.blocks[L.grid.idx[y*L.grid.w+x]];
   if(!b||b.shape===0)return false;
-  if(b.shape===4)return (b.flags&2)!==0&&b.bot<128;
+  if(b.shape===4)return (b.flags&2)!==0&&b.bot<128&&b.base>=0;
   return true;
+}
+
+function findSpawn(L){
+  for(let y=0;y<L.grid.h;y++){
+    for(let x=0;x<L.grid.w;x++){
+      const b=L.info.blocks[L.grid.idx[y*L.grid.w+x]];
+      if(b&&b.thing&&b.kind===100&&b.str.toUpperCase()==='PLAYER1')return {x:x+0.5,y:y+0.5,a:-b.heading*Math.PI*2/256};
+    }
+  }
+  return null;
 }
 
 function shade(c,f){
@@ -433,7 +443,7 @@ function ui(){
         setupGame(L,pickProblems(parsePRB(await prbFile.text()),info.nProb||10,valid));
       }
       hud();
-      s={x:info.startX+0.5,y:info.startY+0.5,a:info.heading*Math.PI*2/256};
+      s=findSpawn(L)||{x:info.startX+0.5,y:info.startY+0.5,a:-info.heading*Math.PI*2/256};
       $('msg').textContent='textures found: '+texBytes.size+' of '+need.size+', things in level: '+L.sprites.length;
       $('c').focus();
       if(!running){running=true;requestAnimationFrame(frame)}
