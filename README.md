@@ -1,12 +1,5 @@
-# Sonic's Schoolhouse – web port
+# sonic's schoolhouse webport wip or something
 
-This repository contains **code only**. You must supply your own copy of the game. Files are read
-locally in your browser and never uploaded.
+you supply your copy of the game, its locally in your browser and never will never uploaded
 
-## Status
-- [x] Asset loader: PCX images, WAV audio
-- [ ] SONIC.DAT format
-- [ ] MAP / BLK / PRB level data
-- [ ] HMI music -> MIDI
-- [ ] AVI (8-bit RLE) cutscenes
-- [ ] Game logic
+this site is only as a joke so as soon as its done i truly want nothing to do with it after unless theres something fatal
