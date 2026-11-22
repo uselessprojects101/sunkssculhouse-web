@@ -26,7 +26,7 @@ a{color:#9ab}
 <div class="label">subject</div><div id="subjects"></div>
 <div class="label">difficulty</div><div id="diffs"></div>
 <div class="label">graphics</div><div id="opts"></div>
-<div style="margin-top:10px"><button id="start" class="pick on">go</button></div>
+<div style="margin-top:10px"><button id="start" class="pick on">go</button> <button id="hub" class="pick">start in the school</button></div>
 </div>
 <div style="margin-top:8px;color:#777;font-size:13px">or pick any level directly</div>
 <div><select id="lvl"></select><button id="go">load level</button></div>
@@ -82,7 +82,7 @@ function parseBlk(text){
     }
     if(mode==='cyc'||mode==='sfx'){
       const c=line.split(/\s+/).map(Number);
-      if(c.length===11&&c.every(n=>!isNaN(n)))info.cyc[c[0]]={cyc:c[1],tck:c[2],flags:c[3],mx:c[4],my:c[5],inc:c[8]};
+      if(c.length===11&&c.every(n=>!isNaN(n)))info.cyc[c[0]]={cyc:c[1],tck:c[2],flags:c[3],mx:c[4],my:c[5],inc:c[8],incBlock:c[6],baseBlock:c[7],baseWall:c[9]};
       continue;
     }
     if(mode===''){
@@ -109,15 +109,17 @@ function parseBlk(text){
       const q=line.indexOf("'");
       const str=q>=0?line.slice(q+1,line.lastIndexOf("'")):'';
       if(mode==='block'){
-        info.blocks[nums[0]]={shape:nums[1],flags:nums[2],n:nums[3],e:nums[4],s:nums[5],w:nums[6],ceil:nums[7],floor:nums[8],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],sound:nums[19],str};
+        info.blocks[nums[0]]={id:nums[0],shape:nums[1],flags:nums[2],n:nums[3],e:nums[4],s:nums[5],w:nums[6],ceil:nums[7],floor:nums[8],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],sound:nums[19],str};
       }else{
-        info.blocks[nums[0]]={shape:nums[1],flags:nums[2],thing:true,base:nums[3],under:nums[4],heading:nums[6],tw:nums[9],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],sound:nums[19],str,n:-1,e:-1,s:-1,w:-1,ceil:-1,floor:-1};
+        info.blocks[nums[0]]={id:nums[0],views:nums[5],shape:nums[1],flags:nums[2],thing:true,base:nums[3],under:nums[4],heading:nums[6],tw:nums[9],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],sound:nums[19],str,n:-1,e:-1,s:-1,w:-1,ceil:-1,floor:-1};
       }
     }
   }
   for(const b of info.blocks){
     if(b&&b.thing){
-      const u=info.blocks[b.under];
+      let u=info.blocks[b.under];
+      let hops=0;
+      while(u&&u.thing&&hops++<5)u=info.blocks[u.under];
       if(u){b.ceil=u.ceil;b.floor=u.floor}
     }else if(b&&(b.flags&8)){
       const u=info.blocks[b.ceil];
@@ -154,9 +156,19 @@ function buildLevel(info,mapBytes,texBytes){
       const b=info.blocks[grid.idx[y*grid.w+x]];
       if(b&&b.thing&&tex.has(b.base)){
         const id=grid.idx[y*grid.w+x];
+        const ub=info.blocks[b.under];
+        if(ub&&ub.thing&&tex.has(ub.base))sprites.push({x:x+0.5,y:y+0.5,b:ub,c:info.cyc[ub.id]||null,frame:0,step:0,dir:0,deco:true});
         sprites.push({x:x+0.5,y:y+0.5,b,c:info.cyc[id]||null,frame:0,step:0,dir:Math.floor(Math.random()*4)*Math.PI/2});
       }
     }
+  }
+  const wallCycs=Object.keys(info.cyc).map(Number).filter(id=>{
+    const b=info.blocks[id];
+    return b&&!b.thing&&info.cyc[id].baseWall>=0&&info.cyc[id].inc;
+  });
+  const openCells=[];
+  if(info.blocks[0]&&info.blocks[0].shape===0){
+    for(let i=0;i<grid.idx.length;i++)if(grid.idx[i]===0)openCells.push(i);
   }
   const fov=info.fov>3.2?info.fov*Math.PI/180:info.fov;
   const doors=[];
@@ -166,7 +178,7 @@ function buildLevel(info,mapBytes,texBytes){
       if(b&&!b.thing&&b.kind===14)doors.push({cx:x,cy:y,x:x+0.5,y:y+0.5,b,open:false});
     }
   }
-  return {info,grid,tex,sprites,doors,mask:0,inv:[],clock:0,found:'',treasure:null,fov,floorColor:color(info.floorIdx),ceilColor:color(info.ceilIdx)};
+  return {info,grid,tex,sprites,doors,openCells,hub:info.blocks.some(b=>b&&!b.thing&&b.kind===8),hasRings:sprites.some(p=>p.b.kind===19),match:null,grade:0,names:[],wallCycs,wallFrame:{},effects:[],player:null,caught:0,note:'',mask:0,inv:[],clock:0,found:'',treasure:null,fov,floorColor:color(info.floorIdx),ceilColor:color(info.ceilIdx)};
 }
 
 function blockAt(L,x,y){
@@ -186,18 +198,41 @@ function blocked(L,x,y){
   if(x<0||y<0||x>=L.grid.w||y>=L.grid.h)return true;
   const b=geoOf(L,L.info.blocks[L.grid.idx[y*L.grid.w+x]]);
   if(!b||b.shape===0)return false;
-  if(b.shape===4)return (b.flags&2)!==0&&b.bot<128&&b.base>=0;
+  if(b.shape===4)return (b.flags&2)!==0&&b.bot<128&&b.base>=0&&b.kind!==98&&b.kind!==19;
   return true;
 }
 
+function regionSize(L,sx,sy,cap){
+  const w=L.grid.w;
+  const seen=new Set([sy*w+sx]);
+  const q=[[sx,sy]];
+  while(q.length&&seen.size<cap){
+    const [x,y]=q.pop();
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+dx,ny=y+dy,k=ny*w+nx;
+      if(seen.has(k)||blocked(L,nx,ny))continue;
+      seen.add(k);
+      q.push([nx,ny]);
+    }
+  }
+  return seen.size;
+}
+
 function findSpawn(L){
+  const marks=[];
   for(let y=0;y<L.grid.h;y++){
     for(let x=0;x<L.grid.w;x++){
       const b=L.info.blocks[L.grid.idx[y*L.grid.w+x]];
-      if(b&&b.thing&&b.kind===100&&b.str.toUpperCase()==='PLAYER1')return {x:x+0.5,y:y+0.5,a:-b.heading*Math.PI*2/256};
+      if(b&&b.thing&&b.kind===100&&b.str.toUpperCase()==='PLAYER1')marks.push({x,y,b});
     }
   }
-  return null;
+  if(!marks.length)return null;
+  let best=null,bestSize=1e9;
+  for(const m of marks){
+    const size=regionSize(L,m.x,m.y,6000);
+    if(size<bestSize){best=m;bestSize=size}
+  }
+  return {x:best.x+0.5,y:best.y+0.5,a:-best.b.heading*Math.PI*2/256};
 }
 
 const SET={lighting:true,floors:true,difficulty:1};
@@ -255,7 +290,9 @@ function render(buf,s,L){
     const hitB=blockAt(L,mx,my);
     const blk=geoOf(L,hitB);
     if(!face)face=side===0?(stx>0?'w':'e'):(sty>0?'n':'s');
-    const panel=blk?blk[face]:-1;
+    let panel=blk?blk[face]:-1;
+    const wf=blk&&blk.id!==undefined?L.wallFrame[blk.id]:null;
+    if(wf&&panel===wf.base)panel+=wf.f*wf.inc;
     const t=panel>=0?L.tex.get(panel):null;
     let wallX=div?dwx:(side===0?s.y+perp*ry:s.x+perp*rx);
     wallX-=Math.floor(wallX);
@@ -320,8 +357,9 @@ function render(buf,s,L){
   drawSprites(buf,s,L,dirX,dirY,plX,plY,pl,scale);
 }
 
-function spriteFits(L,x,y){
-  const r=0.499,q=0.35;
+
+function spriteFits(L,x,y,rr){
+  const r=rr||0.499,q=r*0.7;
   const pts=[[r,0],[-r,0],[0,r],[0,-r],[q,q],[q,-q],[-q,q],[-q,-q]];
   for(const [dx,dy] of pts){
     const cx=Math.floor(x+dx),cy=Math.floor(y+dy);
@@ -330,12 +368,89 @@ function spriteFits(L,x,y){
   return true;
 }
 
-function animate(L,dt){
+function popAt(L,x,y,quiet){
+  L.effects.push({x,y,t:0});
+  const pb=L.info.blocks[131];
+  if(!quiet&&pb&&pb.sound>=0)L.say(soundName(pb.sound));
+}
+
+function recycle(L,bin){
+  if(!L.inv.length)return 'the recycle bin is empty, grab a number first';
+  popAt(L,bin.x,bin.y);
+  putBack(L);
+  return 'recycled, it will turn up in the maze again';
+}
+
+function openDoor(L,d){
+  d.open=true;
+  const mid=L.info.blocks[d.b.id+2];
+  if(mid&&!mid.thing&&mid.shape===1){
+    L.grid.idx[d.cy*L.grid.w+d.cx]=d.b.id+2;
+    d.t=0.5;
+  }else{
+    L.grid.idx[d.cy*L.grid.w+d.cx]=1;
+  }
+}
+
+function chase(L,sp,dt,s){
+  sp.moving=false;
+  const dx=s.x-sp.x,dy=s.y-sp.y,d=Math.hypot(dx,dy);
+  if(d<0.9){
+    if(L.caught<=0){
+      L.caught=4;
+      if(L.inv.length){
+        putBack(L);
+        L.note='dr robotnik grabbed your number and put it back!';
+      }else{
+        L.note='dr robotnik bumped into you!';
+      }
+    }
+    return;
+  }
+  if(d>9)return;
+  const k=1.4*[0.7,1,1.4][SET.difficulty]*dt/d;
+  const nx=sp.x+dx*k,ny=sp.y+dy*k;
+  if(spriteFits(L,nx,sp.y,0.3)){sp.x=nx;sp.moving=true}
+  if(spriteFits(L,sp.x,ny,0.3)){sp.y=ny;sp.moving=true}
+  if(sp.moving)sp.dir=Math.atan2(dy,dx);
+}
+
+function animate(L,dt,s){
   L.clock+=dt;
   const ticks=Math.floor(L.clock/0.04);
+  for(const id of L.wallCycs){
+    const c=L.info.cyc[id];
+    const stepNow=Math.floor(ticks/Math.max(1,c.tck));
+    let f=0;
+    if(c.cyc>=2){
+      if(c.flags&256){
+        const per=2*(c.cyc-1),i=stepNow%per;
+        f=i<c.cyc?i:per-i;
+      }else{
+        f=stepNow%c.cyc;
+      }
+    }
+    L.wallFrame[id]={f,inc:c.inc,base:c.baseWall};
+  }
+  for(let i=L.effects.length-1;i>=0;i--){
+    L.effects[i].t+=dt;
+    if(L.effects[i].t>0.7)L.effects.splice(i,1);
+  }
+  for(const d of L.doors){
+    if(d.t===undefined)continue;
+    d.t-=dt;
+    if(d.t<=0){
+      L.grid.idx[d.cy*L.grid.w+d.cx]=1;
+      d.t=undefined;
+    }
+  }
+  if(L.caught>0)L.caught-=dt;
+  updateMatch(L,dt);
   for(const sp of L.sprites){
+    if(s&&sp.b.kind===98&&!sp.hidden)chase(L,sp,dt,s);
     const c=sp.c;
     if(!c)continue;
+    if(sp.b.kind===98&&!sp.moving){sp.frame=0;continue}
     const stepNow=Math.floor(ticks/Math.max(1,c.tck));
     if(stepNow===sp.step)continue;
     sp.step=stepNow;
@@ -347,7 +462,7 @@ function animate(L,dt){
         sp.frame=stepNow%c.cyc;
       }
     }
-    if((c.flags&8)&&c.mx>0&&!sp.hidden&&(sp.b.kind===1||sp.b.kind===18)){
+    if((c.flags&8)&&c.mx>0&&!sp.hidden&&(sp.b.kind===1||sp.b.kind===18||sp.b.kind===19)){
       const d=c.mx/128*[0.5,1,1.5][SET.difficulty];
       const nx=sp.x+Math.cos(sp.dir)*d,ny=sp.y+Math.sin(sp.dir)*d;
       if(!spriteFits(L,nx,ny)){
@@ -383,6 +498,8 @@ function useSprite(L,s,sp){
   const k=sp.b.kind;
   if(k===1||k===18)return pickUp(L,sp);
   if(k===13)return grab(L,sp);
+  if(k===99)return recycle(L,sp);
+  if(k===16)return flipCard(L,sp);
   if(k===4){L.say(sp.b.str.trim());return 'sound'}
   return '';
 }
@@ -406,9 +523,23 @@ function drawSprites(buf,s,L,dirX,dirY,plX,plY,pl,scale){
     const z=dx*dirX+dy*dirY;
     if(!sp.hidden&&z>0.1&&z<30)list.push({sp,dx,dy,z});
   }
+  for(const e of L.effects){
+    const dx=e.x-s.x,dy=e.y-s.y,z=dx*dirX+dy*dirY;
+    if(z>0.1&&z<30)list.push({sp:{x:e.x,y:e.y,b:{base:790+Math.min(3,Math.floor(e.t/0.16)),tw:128,top:159,bot:0,kind:0,views:0},c:null,frame:0,dir:0},dx,dy,z});
+  }
   list.sort((a,b)=>b.z-a.z);
   for(const it of list){
-    const b=it.sp.b,t=L.tex.get(b.base+it.sp.frame*(it.sp.c?it.sp.c.inc:0))||L.tex.get(b.base);
+    const b=it.sp.b;
+    let ti=b.base+it.sp.frame*(it.sp.c?it.sp.c.inc:0);
+    let mirror=false;
+    if(b.kind===98&&b.views>=2){
+      let rel=Math.atan2(s.y-it.sp.y,s.x-it.sp.x)-(it.sp.dir||0);
+      rel=Math.atan2(Math.sin(rel),Math.cos(rel));
+      ti+=Math.max(0,Math.min(4,4-Math.round(Math.abs(rel)/(Math.PI/4))));
+      mirror=rel<0;
+    }
+    const t=L.tex.get(ti)||L.tex.get(b.base);
+    if(!t)continue;
     const sx=(W/2)*(1+(it.dx*plX+it.dy*plY)/(it.z*pl*pl));
     const wpx=(b.tw/128)*scale/it.z;
     const xl=sx-wpx/2,xr=sx+wpx/2;
@@ -420,6 +551,7 @@ function drawSprites(buf,s,L,dirX,dirY,plX,plY,pl,scale){
     for(let x=xa;x<=xb;x++){
       if(it.z>=zbuf[x])continue;
       let tu=Math.floor((x-xl)/wpx*t.w);
+      if(mirror)tu=t.w-1-tu;
       if(tu<0)tu=0;
       if(tu>=t.w)tu=t.w-1;
       for(let y=y0;y<=y1;y++){
@@ -561,8 +693,7 @@ function openAllDoors(L){
   let n=0;
   for(const d of L.doors){
     if(d.open)continue;
-    d.open=true;
-    L.grid.idx[d.cy*L.grid.w+d.cx]=1;
+    openDoor(L,d);
     n++;
   }
   if(n&&L.doors[0].b.sound>=0)L.say(soundName(L.doors[0].b.sound));
@@ -573,6 +704,7 @@ function pickUp(L,sp){
   const label=sp.b.str.trim().replace('!','').toLowerCase();
   const had=L.inv.length>0;
   putBack(L);
+  popAt(L,sp.x,sp.y);
   sp.hidden=true;
   sp.home={x:sp.x,y:sp.y};
   L.inv=[sp];
@@ -583,7 +715,7 @@ function putBack(L){
   const n=L.inv.length;
   for(const sp of L.inv){
     sp.hidden=false;
-    if(sp.home){sp.x=sp.home.x;sp.y=sp.home.y}
+    respawn(L,sp);
   }
   L.inv=[];
   return n?'put them back':'';
@@ -615,6 +747,7 @@ function submit(L,b){
     g.correct++;
     installBoard(L,500+3*i,filledText(p,need.length),'ok');
     msg='correct!';
+    if(L.player)popAt(L,L.player.x+Math.cos(L.player.a)*0.9,L.player.y-Math.sin(L.player.a)*0.9);
   }else{
     g.tries[i]++;
     putBack(L);
@@ -633,6 +766,95 @@ function submit(L,b){
   return msg;
 }
 
+function respawn(L,sp){
+  if(L.openCells.length){
+    for(let k=0;k<6;k++){
+      const c=L.openCells[Math.floor(Math.random()*L.openCells.length)];
+      const nx=(c%L.grid.w)+0.5,ny=Math.floor(c/L.grid.w)+0.5;
+      sp.x=nx;
+      sp.y=ny;
+      if(!L.player||Math.hypot(nx-L.player.x,ny-L.player.y)>4)break;
+    }
+  }else if(sp.home){
+    sp.x=sp.home.x;
+    sp.y=sp.home.y;
+  }
+}
+
+function chain8(L,b){
+  const letter=b.str.trim().toLowerCase();
+  const re=new RegExp('^'+letter+L.grade+'(\\d)\\.map$');
+  let pool=L.names.filter(n=>re.test(n)&&L.names.includes(n.replace(/\.map$/,'.blk')));
+  if(b.data>0)pool=pool.filter(n=>Number(re.exec(n)[1])<b.data);
+  if(!pool.length)return 'there is no level behind this door';
+  if(b.sound>=0)L.say(soundName(b.sound));
+  return L.go(pool[Math.floor(Math.random()*pool.length)].replace(/\.map$/,''));
+}
+
+function setupMatch(L){
+  L.match=null;
+  const cards=L.sprites.filter(sp=>sp.b.kind===16&&sp.y<100);
+  for(const sp of L.sprites)if(sp.b.kind===16&&sp.y>=100)sp.hidden=true;
+  if(!cards.length)return;
+  for(const sp of cards)sp.card={type:sp.b.id,state:'down',t:0};
+  L.match={cards,found:0,total:new Set(cards.map(c=>c.card.type)).size,timer:0,pending:[]};
+}
+
+function flipCard(L,sp){
+  const m=L.match;
+  if(!m||!sp.card||sp.card.state!=='down'||m.pending.length>=2||m.timer>0)return '';
+  sp.card.state='flipup';
+  sp.card.t=0;
+  m.pending.push(sp);
+  const sb=L.info.blocks[sp.card.type];
+  if(sb&&sb.sound>=0)L.say(soundName(sb.sound));
+  return '';
+}
+
+function updateMatch(L,dt){
+  const m=L.match;
+  if(!m)return;
+  const bl=L.info.blocks;
+  for(const sp of m.cards){
+    const c=sp.card;
+    if(c.state==='flipup'){
+      c.t+=dt;
+      const fr=Math.min(6,Math.floor(c.t/0.08)+1);
+      if(bl[c.type+fr])sp.b=bl[c.type+fr];
+      if(c.t>=0.48)c.state='up';
+    }else if(c.state==='flipdown'){
+      c.t+=dt;
+      const fr=Math.max(0,6-(Math.floor(c.t/0.08)+1));
+      if(bl[c.type+fr])sp.b=bl[c.type+fr];
+      if(c.t>=0.48){
+        c.state='down';
+        sp.b=bl[c.type];
+      }
+    }
+  }
+  if(m.timer>0){
+    m.timer-=dt;
+    if(m.timer<=0){
+      for(const sp of m.pending){sp.card.state='flipdown';sp.card.t=0}
+      m.pending=[];
+    }
+  }else if(m.pending.length===2&&m.pending.every(c=>c.card.state==='up')){
+    const a=m.pending[0],b=m.pending[1];
+    if(a.card.type===b.card.type){
+      a.card.state='matched';
+      b.card.state='matched';
+      m.found++;
+      m.pending=[];
+      popAt(L,a.x,a.y,true);
+      popAt(L,b.x,b.y,true);
+      L.note=m.found>=m.total?'you matched them all, find the exit':'a match!';
+    }else{
+      m.timer=0.7;
+      L.note='not a match';
+    }
+  }
+}
+
 function soundName(n){return 'ah'+String(n).padStart(4,'0')}
 
 function grab(L,sp){
@@ -648,7 +870,7 @@ function facing(L,s){
   for(const sp of L.sprites){
     if(sp.hidden)continue;
     const vx=sp.x-s.x,vy=sp.y-s.y,d=Math.hypot(vx,vy);
-    if(d<bd&&vx*dx+vy*dy>0.4*d&&((sp.b.flags&16)||sp.b.kind===13)){best={sprite:sp,block:sp.b};bd=d}
+    if(d<bd&&vx*dx+vy*dy>0.4*d&&((sp.b.flags&16)||sp.b.kind===13||sp.b.kind===99)){best={sprite:sp,block:sp.b};bd=d}
   }
   for(let t=0.2;t<bd;t+=0.1){
     const cx=Math.floor(s.x+dx*t),cy=Math.floor(s.y+dy*t);
@@ -668,6 +890,9 @@ function activate(L,s){
   if(b.kind===1||b.kind===18)return pickUp(L,hit.sprite);
   if(b.kind>=10&&b.kind<=12)return submit(L,b);
   if(b.kind===13)return grab(L,hit.sprite);
+  if(b.kind===99)return recycle(L,hit.sprite);
+  if(b.kind===16)return flipCard(L,hit.sprite);
+  if(b.kind===8)return chain8(L,b);
   if(b.kind===4){L.say(b.str.trim());return 'sound'}
   if(b.kind===7){
     if(b.sound>=0)L.say(soundName(b.sound));
@@ -682,10 +907,20 @@ function activate(L,s){
 function autoActions(L,s){
   let msg='';
   for(const sp of L.sprites){
+    if(sp.hidden||sp.b.kind!==40)continue;
+    if(Math.hypot(sp.x-s.x,sp.y-s.y)<0.95){
+      sp.hidden=true;
+      popAt(L,sp.x,sp.y,true);
+      if(sp.b.sound>=0)L.say(soundName(sp.b.sound));
+      msg='pop!';
+    }
+  }
+  for(const sp of L.sprites){
     if(sp.hidden||sp.b.kind!==19)continue;
     if(Math.hypot(sp.x-s.x,sp.y-s.y)<0.95){
       sp.hidden=true;
       L.found+=sp.b.str.trim();
+      popAt(L,sp.x,sp.y,true);
       if(sp.b.sound>=0)L.say(soundName(sp.b.sound));
       const t=L.treasure;
       msg=t&&L.found.length>=t.ans.length?'you got them all, find the exit':'got one';
@@ -699,8 +934,7 @@ function autoActions(L,s){
     for(const d of L.doors){
       if(d.open)continue;
       if((L.mask&d.b.data)===d.b.data&&Math.hypot(d.x-s.x,d.y-s.y)<1.6){
-        d.open=true;
-        L.grid.idx[d.cy*L.grid.w+d.cx]=1;
+        openDoor(L,d);
         if(d.b.sound>=0)L.say(soundName(d.b.sound));
         msg='a door opened';
       }
@@ -815,6 +1049,15 @@ function ui(){
       let i=0;
       hudMain=L.treasure.text.replace(/_/g,()=>L.found[i++]||'_');
       hudSub='';
+    }else if(L&&L.hub){
+      hudMain='pick a door';
+      hudSub=gradeNames[L.grade];
+    }else if(L&&L.match){
+      hudMain=L.match.found>=L.match.total?'you matched them all':'find the matching pictures';
+      hudSub='matched '+L.match.found+' of '+L.match.total;
+    }else if(L&&L.hasRings){
+      hudMain='grab the rings';
+      hudSub='rings '+L.found.length;
     }else if(g){
       const cur=problemIndex(g);
       hudMain=cur<0?'all done':g.probs[cur].q;
@@ -850,6 +1093,7 @@ function ui(){
     if(raw)Object.assign(SET,JSON.parse(raw));
   }catch(e){}
 
+  const state={mask:0};
   const chosen={grade:0,subject:'math'};
   const gradeNames=['kindergarten','1st grade','2nd grade','3rd grade','4th grade'];
   const subjectNames=['math','english','recess'];
@@ -888,6 +1132,11 @@ function ui(){
     });
   }
 
+  $('hub').onclick=()=>{
+    if(files.has('main.map'))loadLevel('main.map');
+    else $('msg').textContent='main.map was not found in this folder';
+  };
+
   $('start').onclick=()=>{
     const n=pickLevel([...files.keys()],chosen.subject,chosen.grade);
     if(!n){$('msg').textContent='no '+chosen.subject+' level for '+gradeNames[chosen.grade]+' in this folder';return}
@@ -920,9 +1169,13 @@ function ui(){
         if(!b)return;
         for(const k of ['n','e','s','w','ceil','floor'])if(b[k]>=0)need.add(b[k]);
         if(b.thing&&b.base>=0){
-          need.add(b.base);
           const c=info.cyc[id];
-          if(c)for(let f=1;f<c.cyc;f++)need.add(b.base+f*c.inc);
+          const nv=b.kind===98&&b.views>=2?5:1;
+          const fr=c?c.cyc:1;
+          for(let f=0;f<fr;f++)for(let v=0;v<nv;v++)need.add(b.base+f*(c?c.inc:0)+v);
+        }else if(!b.thing){
+          const c=info.cyc[id];
+          if(c&&c.baseWall>=0&&c.inc)for(let f=0;f<c.cyc;f++)need.add(c.baseWall+f*c.inc);
         }
       });
       const texBytes=new Map();
@@ -932,6 +1185,10 @@ function ui(){
       }
       L=buildLevel(info,mapBytes,texBytes);
       L.say=say;
+      L.grade=chosen.grade;
+      L.names=[...files.keys()];
+      L.mask=state.mask;
+      setupMatch(L);
       L.sky=null;
       if(info.backdrop){
         const sf=files.get(info.backdrop.toLowerCase());
@@ -1064,10 +1321,13 @@ function ui(){
       const strafe=(keys.has('KeyE')?1:0)-(keys.has('KeyQ')?1:0);
       if(!paused){
         step(L,s,fwd,turn,strafe,dt,ghost);
-        animate(L,dt);
+        animate(L,dt,s);
+        L.player=s;
+        state.mask|=L.mask;
       }
       $('pos').textContent='position x '+s.x.toFixed(1)+', y '+s.y.toFixed(1)+', facing '+Math.round((((-s.a*256/(2*Math.PI))%256)+256)%256);
-      const note=paused?'':autoActions(L,s);
+      const note=(paused?'':autoActions(L,s))||L.note;
+      L.note='';
       if(note){$('msg').textContent=note;hud()}
       render(buf,s,L);
       vctx.putImageData(img,0,0);
