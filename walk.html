@@ -15,6 +15,12 @@ a{color:#9ab}
 .pick.on{background:#1f6b3a;border-color:#7d9;color:#fff}
 #menu{display:none;margin-top:10px}
 #menu .label{color:#999;margin-top:8px}
+#plist{margin:4px 0}
+#plist input[type=text]{width:130px}
+#heads{display:flex;flex-wrap:wrap;justify-content:center;gap:4px;max-width:360px;margin:6px auto}
+#heads img{width:68px;height:51px;cursor:pointer;border-radius:3px}
+#report{display:none;text-align:left;margin:8px auto;max-width:420px;font-size:14px;white-space:pre-wrap;border:1px solid #444;padding:8px;border-radius:4px}
+#report img{float:left;width:68px;height:51px;margin:0 10px 6px 0}
 </style>
 </head>
 <body>
@@ -22,6 +28,11 @@ a{color:#9ab}
 <div>pick the sonic folder from your cd (the one that has map and tex inside)</div>
 <div><input type="file" id="folder" webkitdirectory multiple></div>
 <div id="menu">
+<div class="label">player</div>
+<div id="plist"></div>
+<div id="heads"></div>
+<div><button id="repbtn" class="pick">report card</button></div>
+<div id="report"></div>
 <div class="label">grade</div><div id="grades"></div>
 <div class="label">subject</div><div id="subjects"></div>
 <div class="label">difficulty</div><div id="diffs"></div>
@@ -69,11 +80,12 @@ function toRGBA(t){
 
 function parseBlk(text){
   const info={floorIdx:0,ceilIdx:0,startX:1,startY:1,heading:0,fov:1,nProb:0,tries:3,prb:'',backdrop:'',cyc:{},blocks:[]};
-  let mode='';
+  let mode='',lastComment='';
   for(const raw of text.split(/\r?\n/)){
     const line=raw.trim();
     if(!line||line[0]==='\x1a')continue;
     if(line[0]==='#'){
+      if(!line.includes('N_WALL')&&!line.includes('INC_WALL')&&!line.includes('SFX---')&&!(line.includes('BASE')&&line.includes('VIEWS')))lastComment=line.slice(1).trim();
       if(line.includes('N_WALL'))mode='block';
       else if(line.includes('BASE')&&line.includes('VIEWS'))mode='thing';
       else if(line.includes('SFX---'))mode='sfx';
@@ -109,7 +121,7 @@ function parseBlk(text){
       const q=line.indexOf("'");
       const str=q>=0?line.slice(q+1,line.lastIndexOf("'")):'';
       if(mode==='block'){
-        info.blocks[nums[0]]={id:nums[0],shape:nums[1],flags:nums[2],n:nums[3],e:nums[4],s:nums[5],w:nums[6],ceil:nums[7],floor:nums[8],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],sound:nums[19],str};
+        info.blocks[nums[0]]={id:nums[0],name:lastComment,shape:nums[1],flags:nums[2],n:nums[3],e:nums[4],s:nums[5],w:nums[6],ceil:nums[7],floor:nums[8],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],sound:nums[19],str};
       }else{
         info.blocks[nums[0]]={id:nums[0],views:nums[5],shape:nums[1],flags:nums[2],thing:true,base:nums[3],under:nums[4],heading:nums[6],tw:nums[9],bot:nums[15],top:nums[16],kind:nums[17],data:nums[18],sound:nums[19],str,n:-1,e:-1,s:-1,w:-1,ceil:-1,floor:-1};
       }
@@ -178,7 +190,7 @@ function buildLevel(info,mapBytes,texBytes){
       if(b&&!b.thing&&b.kind===14)doors.push({cx:x,cy:y,x:x+0.5,y:y+0.5,b,open:false});
     }
   }
-  return {info,grid,tex,sprites,doors,openCells,hub:info.blocks.some(b=>b&&!b.thing&&b.kind===8),hasRings:sprites.some(p=>p.b.kind===19),match:null,grade:0,names:[],wallCycs,wallFrame:{},effects:[],player:null,caught:0,note:'',mask:0,inv:[],clock:0,found:'',treasure:null,fov,floorColor:color(info.floorIdx),ceilColor:color(info.ceilIdx)};
+  return {info,grid,tex,sprites,doors,anims:[],motd:'',playTime:0,recorded:false,onDone:null,levelName:'',openCells,hub:info.blocks.some(b=>b&&!b.thing&&b.kind===8),hasRings:sprites.some(p=>p.b.kind===19),match:null,grade:0,names:[],wallCycs,wallFrame:{},effects:[],player:null,caught:0,note:'',mask:0,inv:[],clock:0,found:'',treasure:null,fov,floorColor:color(info.floorIdx),ceilColor:color(info.ceilIdx)};
 }
 
 function blockAt(L,x,y){
@@ -235,7 +247,241 @@ function findSpawn(L){
   return {x:best.x+0.5,y:best.y+0.5,a:-best.b.heading*Math.PI*2/256};
 }
 
-const SET={lighting:true,floors:true,difficulty:1};
+const GRADES=['kindergarten','1st grade','2nd grade','3rd grade','4th grade'];
+
+function fmtTime(sec){
+  return String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0');
+}
+
+function levelLabel(name){
+  const m=String(name).match(/^([a-z])_(\d)/);
+  if(!m)return String(name);
+  const sub={a:'math',c:'math',b:'english',d:'english',g:'recess',h:'recess'}[m[1]]||m[1];
+  return sub+' '+(GRADES[Number(m[2])]||'');
+}
+
+function reportText(p){
+  const h=p.history||[];
+  if(!h.length)return p.name+' has not finished a level yet';
+  const last=h[h.length-1];
+  let out=p.name+' answered '+last.correct+' correctly\nin '+fmtTime(last.secs)+'\n\n';
+  out+=h.slice().reverse().slice(0,10).map(r=>{
+    const d=new Date(r.t);
+    const date=String(d.getMonth()+1).padStart(2,'0')+'/'+String(d.getDate()).padStart(2,'0')+'/'+String(d.getFullYear()%100).padStart(2,'0');
+    return date+' '+levelLabel(r.level)+': '+r.correct+' of '+r.total+' in '+fmtTime(r.secs);
+  }).join('\n');
+  return out;
+}
+
+const SET={lighting:true,floors:true,difficulty:1,music:true,sfx:true};
+
+function parseHMI(b){
+  const dv=new DataView(b.buffer,b.byteOffset,b.byteLength);
+  if(String.fromCharCode(...b.subarray(0,12))!=='HMI-MIDISONG')throw new Error('not an hmi file');
+  const n=dv.getUint32(0xE4,true),to=dv.getUint32(0xE8,true);
+  const offs=[];
+  for(let i=0;i<n;i++)offs.push(dv.getUint32(to+4*i,true));
+  offs.push(b.length);
+  const events=[];
+  let total=0;
+  for(let t=0;t<n;t++){
+    let i=offs[t]+dv.getUint32(offs[t]+0x4B,true);
+    const end=offs[t+1];
+    i+=2+b[i+1];
+    let tick=0,status=0;
+    while(i<end){
+      let d=0,c;
+      do{c=b[i++];d=(d<<7)|(c&127)}while(c&128);
+      tick+=d;
+      c=b[i];
+      if(c===0xFF){
+        if(b[i+1]===0x2F)break;
+        i+=3+b[i+2];
+        continue;
+      }
+      if(c===0xFE)break;
+      if(c&128){status=c;i++}
+      const hi=status&240,ch=status&15;
+      if(hi===0x90){
+        const note=b[i],vel=b[i+1];
+        i+=2;
+        let dur=0;
+        do{c=b[i++];dur=(dur<<7)|(c&127)}while(c&128);
+        events.push({tick,type:1,ch,a:note,b:vel,dur});
+      }else if(hi===0xB0){
+        events.push({tick,type:2,ch,a:b[i],b:b[i+1]});
+        i+=2;
+      }else if(hi===0xC0){
+        events.push({tick,type:3,ch,a:b[i]});
+        i+=1;
+      }else if(hi===0x80||hi===0xA0||hi===0xE0){
+        i+=2;
+      }else if(hi===0xD0){
+        i+=1;
+      }else break;
+    }
+    total=Math.max(total,tick);
+  }
+  events.sort((x,y)=>(x.tick-y.tick)||((x.type===1)-(y.type===1)));
+  const tps=dv.getUint16(0xD4,true)||120;
+  for(const e of events){e.t=e.tick/tps;e.dt=e.dur?e.dur/tps:0}
+  return {events,length:total/tps};
+}
+
+const VOICES=[
+  ['triangle',0.005,0.7,0.12,0.25,0],['sine',0.002,0.9,0.0,0.3,0],['square',0.01,0.05,0.8,0.08,2200],['sawtooth',0.003,0.5,0.1,0.2,2600],
+  ['sawtooth',0.005,0.25,0.55,0.1,900],['sawtooth',0.08,0.1,0.8,0.25,3000],['sawtooth',0.06,0.1,0.75,0.3,2800],['sawtooth',0.03,0.15,0.8,0.12,3600],
+  ['square',0.03,0.1,0.65,0.1,2400],['sine',0.04,0.1,0.8,0.15,0],['square',0.01,0.1,0.7,0.1,3000],['triangle',0.15,0.2,0.7,0.4,0],
+  ['triangle',0.01,0.3,0.4,0.2,0],['triangle',0.004,0.35,0.1,0.2,0],['sine',0.002,0.4,0.0,0.2,0],['triangle',0.01,0.4,0.2,0.2,0]
+];
+
+const music={timer:null,song:null,idx:0,base:0,loop:0,ch:[],ctx:null,master:null,noise:null,active:0};
+
+function noiseBuffer(ctx){
+  const buf=ctx.createBuffer(1,ctx.sampleRate,ctx.sampleRate);
+  const d=buf.getChannelData(0);
+  for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;
+  return buf;
+}
+
+function drumHit(m,note,when,gain){
+  const ctx=m.ctx;
+  const out=ctx.createGain();
+  out.connect(m.master);
+  let dur=0.15;
+  const noise=(freq,type,len,level)=>{
+    const src=ctx.createBufferSource();
+    src.buffer=m.noise;
+    const f=ctx.createBiquadFilter();
+    f.type=type;
+    f.frequency.value=freq;
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(level*gain,when);
+    g.gain.exponentialRampToValueAtTime(0.001,when+len);
+    src.connect(f);f.connect(g);g.connect(out);
+    src.start(when);
+    src.stop(when+len+0.02);
+    dur=Math.max(dur,len);
+  };
+  const tone=(f0,f1,len,level)=>{
+    const o=ctx.createOscillator();
+    o.type='sine';
+    o.frequency.setValueAtTime(f0,when);
+    o.frequency.exponentialRampToValueAtTime(f1,when+len);
+    const g=ctx.createGain();
+    g.gain.setValueAtTime(level*gain,when);
+    g.gain.exponentialRampToValueAtTime(0.001,when+len);
+    o.connect(g);g.connect(out);
+    o.start(when);
+    o.stop(when+len+0.02);
+    dur=Math.max(dur,len);
+  };
+  if(note===35||note===36)tone(150,45,0.2,1.1);
+  else if(note===38||note===40||note===37){noise(1500,'highpass',0.16,0.8);tone(210,150,0.1,0.5)}
+  else if(note===39)noise(1500,'bandpass',0.12,0.8);
+  else if(note===42||note===44)noise(7000,'highpass',0.05,0.5);
+  else if(note===46)noise(6500,'highpass',0.25,0.5);
+  else if(note===49||note===51||note===52||note===55||note===57||note===59)noise(5000,'highpass',0.7,0.5);
+  else if(note>=41&&note<=50)tone(80+(note-41)*14,50+(note-41)*8,0.28,0.9);
+  else noise(3000,'bandpass',0.05,0.4);
+}
+
+function melodicNote(m,ch,note,vel,when,len){
+  const ctx=m.ctx;
+  const st=m.ch[ch];
+  const v=VOICES[Math.min(15,st.prog>>3)];
+  const o=ctx.createOscillator();
+  o.type=v[0];
+  o.frequency.value=440*Math.pow(2,(note-69)/12);
+  const g=ctx.createGain();
+  const peak=(vel/127)*(st.vol/127)*(st.exp/127)*0.2;
+  const end=when+Math.max(0.05,len);
+  g.gain.setValueAtTime(0.0001,when);
+  g.gain.linearRampToValueAtTime(peak,when+v[1]);
+  g.gain.exponentialRampToValueAtTime(Math.max(0.0002,peak*Math.max(v[3],0.05)),when+v[1]+v[2]);
+  g.gain.setValueAtTime(Math.max(0.0002,peak*Math.max(v[3],0.05)),Math.max(when+v[1]+v[2],end));
+  g.gain.exponentialRampToValueAtTime(0.0001,end+v[4]);
+  let node=o;
+  if(v[5]){
+    const f=ctx.createBiquadFilter();
+    f.type='lowpass';
+    f.frequency.value=v[5];
+    o.connect(f);
+    node=f;
+  }
+  let outNode=g;
+  node.connect(g);
+  if(ctx.createStereoPanner){
+    const p=ctx.createStereoPanner();
+    p.pan.value=(st.pan-64)/64;
+    g.connect(p);
+    outNode=p;
+  }
+  outNode.connect(m.master);
+  o.start(when);
+  o.stop(end+v[4]+0.05);
+  m.active++;
+  o.onended=()=>{m.active--};
+}
+
+function playEvent(m,e,when){
+  const st=m.ch[e.ch];
+  if(e.type===3)st.prog=e.a;
+  else if(e.type===2){
+    if(e.a===7)st.vol=e.b;
+    else if(e.a===10)st.pan=e.b;
+    else if(e.a===11)st.exp=e.b;
+  }else if(e.type===1){
+    if(e.b===0||m.active>48)return;
+    if(e.ch===9)drumHit(m,e.a,when,(e.b/127)*(st.vol/127)*0.5);
+    else melodicNote(m,e.ch,e.a,e.b,when,e.dt);
+  }
+}
+
+function musicTick(){
+  const m=music,song=m.song;
+  if(!song||!m.master)return;
+  const horizon=m.ctx.currentTime+1.0;
+  let guard=0;
+  while(guard++<2000){
+    const e=song.events[m.idx];
+    const when=m.base+m.loop*song.length+e.t;
+    if(when>horizon)break;
+    playEvent(m,e,Math.max(when,m.ctx.currentTime));
+    m.idx++;
+    if(m.idx>=song.events.length){m.idx=0;m.loop++}
+  }
+}
+
+function stopMusic(){
+  if(music.timer){clearInterval(music.timer);music.timer=null}
+  if(music.master){
+    const mg=music.master;
+    try{mg.gain.setTargetAtTime(0,music.ctx.currentTime,0.05)}catch(e){}
+    setTimeout(()=>{try{mg.disconnect()}catch(e){}},500);
+    music.master=null;
+  }
+  music.song=null;
+}
+
+function startMusic(ctx,song){
+  stopMusic();
+  music.ctx=ctx;
+  music.master=ctx.createGain();
+  music.master.gain.value=0.3;
+  const comp=ctx.createDynamicsCompressor();
+  music.master.connect(comp);
+  comp.connect(ctx.destination);
+  if(!music.noise||music.noiseCtx!==ctx){music.noise=noiseBuffer(ctx);music.noiseCtx=ctx}
+  music.ch=Array.from({length:16},()=>({prog:0,vol:100,pan:64,exp:127}));
+  music.song=song;
+  music.idx=0;
+  music.loop=0;
+  music.active=0;
+  music.base=ctx.currentTime+0.2;
+  music.timer=setInterval(musicTick,150);
+  musicTick();
+}
 
 function fadeF(d){return SET.lighting?Math.max(0.4,1-Math.max(0,d-3)/18):1}
 
@@ -435,6 +681,11 @@ function animate(L,dt,s){
   for(let i=L.effects.length-1;i>=0;i--){
     L.effects[i].t+=dt;
     if(L.effects[i].t>0.7)L.effects.splice(i,1);
+  }
+  for(let i=L.anims.length-1;i>=0;i--){
+    const a=L.anims[i];
+    a.t-=dt;
+    if(a.t<=0){L.grid.idx[a.idx]=a.to;L.anims.splice(i,1)}
   }
   for(const d of L.doors){
     if(d.t===undefined)continue;
@@ -677,16 +928,48 @@ function filledText(p,n){
 }
 
 function setupGame(L,probs){
-  L.game={probs,solved:probs.map(()=>false),tries:probs.map(()=>0),progress:probs.map(()=>0),correct:0,over:false};
+  L.game={probs,solved:probs.map(()=>false),tries:probs.map(()=>0),progress:probs.map(()=>0),sel:-1,correct:0,over:false};
   L.inv=[];
   probs.forEach((p,i)=>installBoard(L,500+3*i,p.q,''));
-  installBoard(L,1100,probs[0].q,'');
 }
 
+function selIndex(g){return g.sel>=0&&!g.solved[g.sel]?g.sel:-1}
+
 function refreshCurrent(L){
-  const g=L.game,i=problemIndex(g);
-  if(i<0){g.over=true;return}
-  installBoard(L,1100,filledText(g.probs[i],g.progress[i]),'');
+  const g=L.game;
+  if(problemIndex(g)<0)g.over=true;
+}
+
+function parseMotd(text){
+  const out={};
+  for(const raw of text.split(/\r?\n/)){
+    const m=raw.trim().match(/^(\d+)-(\d+)\s+~\s*(.*?)\s*~?\s*$/);
+    if(m)out[m[1]+'-'+m[2]]=m[3];
+  }
+  return out;
+}
+
+function openPlainDoor(L,cell,b){
+  const idx=cell[1]*L.grid.w+cell[0];
+  const id=L.grid.idx[idx];
+  const mid=L.info.blocks[id+1];
+  L.grid.idx[idx]=mid&&!mid.thing?id+1:1;
+  L.anims.push({idx,to:1,t:0.5});
+  L.say(soundName(b.sound>=0?b.sound:105));
+  return 'the door opened';
+}
+
+function openDoorsNear(L,cx,cy){
+  let n=0;
+  for(const d of L.doors){
+    if(d.open)continue;
+    if(Math.hypot(d.x-(cx+0.5),d.y-(cy+0.5))<=3.5){
+      openDoor(L,d);
+      if(d.b.sound>=0)L.say(soundName(d.b.sound));
+      n++;
+    }
+  }
+  return n;
 }
 
 function openAllDoors(L){
@@ -721,19 +1004,20 @@ function putBack(L){
   return n?'put them back':'';
 }
 
-function submit(L,b){
+function submit(L,b,cell){
   const g=L.game;
   if(!g)return '';
   if(g.over)return 'all the problems are done';
   const current=b.n>=1100||b.e>=1100||b.s>=1100||b.w>=1100;
-  const i=current?problemIndex(g):b.data-1;
+  if(current)return L.motd||'';
+  const i=b.data-1;
   if(i<0||i>=g.probs.length)return 'nothing to answer here';
   if(g.solved[i])return 'this one is already done';
-  if(!L.inv.length)return 'grab a number or letter first, then bring it to the board';
   const p=g.probs[i];
   const need=answerTokens(p.a);
+  g.sel=i;
+  if(!L.inv.length)return 'this is the problem now, grab an answer and bring it back here';
   const have=L.inv[0].b.str.trim().toUpperCase();
-  const before=problemIndex(g);
   let msg;
   if(have===need[g.progress[i]]){
     g.progress[i]++;
@@ -748,6 +1032,7 @@ function submit(L,b){
     installBoard(L,500+3*i,filledText(p,need.length),'ok');
     msg='correct!';
     if(L.player)popAt(L,L.player.x+Math.cos(L.player.a)*0.9,L.player.y-Math.sin(L.player.a)*0.9);
+    if(cell&&openDoorsNear(L,cell[0],cell[1])>0)msg+=' a door opened';
   }else{
     g.tries[i]++;
     putBack(L);
@@ -756,13 +1041,13 @@ function submit(L,b){
     installBoard(L,500+3*i,filledText(p,need.length),'miss');
     msg='out of tries, the answer was '+p.a.replace('!','');
   }
+  g.sel=-1;
   refreshCurrent(L);
   if(g.over){
     openAllDoors(L);
+    if(L.onDone)L.onDone();
     return msg+' all done, the doors are open';
   }
-  const now=problemIndex(g);
-  if(now!==before&&g.probs[now].snd>=0)L.say(soundName(g.probs[now].snd));
   return msg;
 }
 
@@ -848,6 +1133,7 @@ function updateMatch(L,dt){
       popAt(L,a.x,a.y,true);
       popAt(L,b.x,b.y,true);
       L.note=m.found>=m.total?'you matched them all, find the exit':'a match!';
+      if(m.found>=m.total&&L.onDone)L.onDone();
     }else{
       m.timer=0.7;
       L.note='not a match';
@@ -888,7 +1174,7 @@ function activate(L,s){
   if(!hit)return L.game?'nothing here, face a number or a button up close and press space':'';
   const b=hit.block;
   if(b.kind===1||b.kind===18)return pickUp(L,hit.sprite);
-  if(b.kind>=10&&b.kind<=12)return submit(L,b);
+  if(b.kind>=10&&b.kind<=12)return submit(L,b,hit.cell);
   if(b.kind===13)return grab(L,hit.sprite);
   if(b.kind===99)return recycle(L,hit.sprite);
   if(b.kind===16)return flipCard(L,hit.sprite);
@@ -899,6 +1185,7 @@ function activate(L,s){
     return 'sonic is talking';
   }
   if(b.kind===6)return L.go(b.str.trim());
+  if(b.kind===0&&/^door closed/i.test(b.name||'')&&hit.cell)return openPlainDoor(L,hit.cell,b);
   if(b.kind===2)return L.go(b.str.trim()+Math.floor(Math.random()*Math.max(1,b.data)));
   if(b.kind===17)return 'the school bus field trip is not built yet';
   return '';
@@ -1059,8 +1346,8 @@ function ui(){
       hudMain='grab the rings';
       hudSub='rings '+L.found.length;
     }else if(g){
-      const cur=problemIndex(g);
-      hudMain=cur<0?'all done':g.probs[cur].q;
+      const cur=selIndex(g);
+      hudMain=problemIndex(g)<0?'all done':(cur<0?'':filledText(g.probs[cur],g.progress[cur]));
       hudSub=cur<0?g.correct+' of '+g.probs.length+' correct':'solved '+g.solved.filter(Boolean).length+' of '+g.probs.length;
     }else{
       hudMain='';
@@ -1083,6 +1370,7 @@ function ui(){
     }
     $('msg').textContent=maps.length?maps.length+' levels found, pick a grade and subject and press go':'no levels found, pick the sonic folder from the cd';
     if(maps.length)showMenu();
+    loadHeads();
   };
 
   function saveSettings(){
@@ -1094,6 +1382,124 @@ function ui(){
   }catch(e){}
 
   const state={mask:0};
+  const songCache=new Map();
+  const PLAYERS_KEY='schoolhouse.players';
+  let players=[{name:'player 1',head:0,mask:0,history:[]}],cur=0;
+  try{
+    const raw=localStorage.getItem(PLAYERS_KEY);
+    if(raw){
+      const d=JSON.parse(raw);
+      if(d&&d.players&&d.players.length){players=d.players;cur=Math.min(d.cur||0,players.length-1)}
+    }
+  }catch(e){}
+  state.mask=players[cur].mask||0;
+  const headArt={norm:[],pick:[]};
+  const player=()=>players[cur];
+  function savePlayers(){
+    try{localStorage.setItem(PLAYERS_KEY,JSON.stringify({players,cur}))}catch(e){}
+  }
+
+  async function loadHeads(){
+    headArt.norm=[];
+    headArt.pick=[];
+    for(let i=0;i<10;i++){
+      for(const [arr,pre] of [[headArt.norm,'head'],[headArt.pick,'headpk']]){
+        const f=files.get(pre+String(i).padStart(2,'0')+'.pcx');
+        if(!f){arr.push(null);continue}
+        try{
+          const t=decodePCX(new Uint8Array(await f.arrayBuffer()));
+          arr.push(rgbaCanvas(t.w,t.h,toRGBA(t)).toDataURL());
+        }catch(e){arr.push(null)}
+      }
+    }
+    renderPlayers();
+  }
+
+  function headImg(i,picked){
+    const src=(picked?headArt.pick[i]:null)||headArt.norm[i];
+    if(!src)return null;
+    const im=new Image();
+    im.src=src;
+    return im;
+  }
+
+  function renderPlayers(){
+    const box=$('plist');
+    box.textContent='';
+    const sel=document.createElement('select');
+    players.forEach((p,i)=>{
+      const o=document.createElement('option');
+      o.value=i;
+      o.textContent=p.name;
+      sel.appendChild(o);
+    });
+    sel.value=cur;
+    sel.onchange=()=>{cur=Number(sel.value);state.mask=player().mask||0;savePlayers();renderPlayers()};
+    const name=document.createElement('input');
+    name.type='text';
+    name.maxLength=16;
+    name.value=player().name;
+    name.onchange=()=>{player().name=name.value.trim()||'player';savePlayers();renderPlayers()};
+    const add=document.createElement('button');
+    add.className='pick';
+    add.textContent='add player';
+    add.onclick=()=>{
+      players.push({name:'player '+(players.length+1),head:0,mask:0,history:[]});
+      cur=players.length-1;
+      state.mask=0;
+      savePlayers();
+      renderPlayers();
+    };
+    const rem=document.createElement('button');
+    rem.className='pick';
+    rem.textContent='remove player';
+    rem.onclick=()=>{
+      if(players.length<2){$('msg').textContent='there has to be at least one player';return}
+      if(confirm('Delete player ['+player().name+'] ?')){
+        players.splice(cur,1);
+        cur=0;
+        state.mask=player().mask||0;
+        savePlayers();
+        renderPlayers();
+      }
+    };
+    box.append(sel,' ',name,' ',add,' ',rem);
+    const hb=$('heads');
+    hb.textContent='';
+    for(let i=0;i<10;i++){
+      const im=headImg(i,i===player().head);
+      if(!im)continue;
+      im.onclick=()=>{player().head=i;savePlayers();renderPlayers()};
+      hb.appendChild(im);
+    }
+    if(!hb.childNodes.length)hb.textContent='head pictures show up once you pick the folder';
+    if($('report').style.display==='block')showReport(true);
+  }
+
+  function showReport(keepOpen){
+    const box=$('report');
+    if(box.style.display==='block'&&!keepOpen){box.style.display='none';return}
+    box.textContent='';
+    const im=headImg(player().head,false);
+    if(im)box.appendChild(im);
+    box.appendChild(document.createTextNode(reportText(player())));
+    box.style.display='block';
+  }
+
+  $('repbtn').onclick=()=>showReport(false);
+
+  function recordResult(){
+    if(!L||L.recorded)return;
+    L.recorded=true;
+    let correct=0,total=0;
+    if(L.game){correct=L.game.correct;total=L.game.probs.length}
+    else if(L.match){correct=L.match.found;total=L.match.total}
+    else return;
+    const p=player();
+    p.history=(p.history||[]).concat([{t:Date.now(),level:L.levelName,correct,total,secs:Math.round(L.playTime)}]).slice(-30);
+    savePlayers();
+    if($('report').style.display==='block')showReport(true);
+  }
   const chosen={grade:0,subject:'math'};
   const gradeNames=['kindergarten','1st grade','2nd grade','3rd grade','4th grade'];
   const subjectNames=['math','english','recess'];
@@ -1123,11 +1529,16 @@ function ui(){
     });
     const obox=$('opts');
     obox.textContent='';
-    [['lighting','lighting'],['floors','floors and ceilings']].forEach(([k,label])=>{
+    [['lighting','lighting'],['floors','floors and ceilings'],['music','music'],['sfx','sound effects']].forEach(([k,label])=>{
       const b=document.createElement('button');
       b.className='pick'+(SET[k]?' on':'');
       b.textContent=label+(SET[k]?' on':' off');
-      b.onclick=()=>{SET[k]=!SET[k];saveSettings();showMenu()};
+      b.onclick=()=>{
+        SET[k]=!SET[k];
+        saveSettings();
+        if(k==='music'){if(SET.music&&L)playLevelMusic(L.levelName);else stopMusic()}
+        showMenu();
+      };
       obox.appendChild(b);
     });
   }
@@ -1144,7 +1555,26 @@ function ui(){
   };
 
   let actx=null;
+  async function playLevelMusic(levelName){
+    stopMusic();
+    if(!SET.music)return;
+    const key=/^[a-z]_/.test(levelName)?levelName.slice(0,2):levelName;
+    const f=files.get(key+'.hmi');
+    if(!f)return;
+    try{
+      let song=songCache.get(key);
+      if(!song){
+        song=parseHMI(new Uint8Array(await f.arrayBuffer()));
+        songCache.set(key,song);
+      }
+      actx=actx||new AudioContext();
+      if(actx.state==='suspended'&&!paused)await actx.resume();
+      startMusic(actx,song);
+    }catch(e){}
+  }
+
   async function say(name){
+    if(!SET.sfx)return;
     const f=files.get(name+'.wav');
     if(!f)return;
     try{
@@ -1185,6 +1615,8 @@ function ui(){
       }
       L=buildLevel(info,mapBytes,texBytes);
       L.say=say;
+      L.onDone=recordResult;
+      L.levelName=n.replace(/\.map$/,'');
       L.grade=chosen.grade;
       L.names=[...files.keys()];
       L.mask=state.mask;
@@ -1231,9 +1663,19 @@ function ui(){
         const chosenProbs=pickProblems(parsePRB(await prbFile.text()),info.nProb||10,valid);
         if(chosenProbs.length){
           setupGame(L,chosenProbs);
-          if(chosenProbs[0].snd>=0)L.say(soundName(chosenProbs[0].snd));
         }
       }
+      try{
+        const mf=files.get('motd.txt');
+        if(mf){
+          const motd=parseMotd(await mf.text());
+          const now=new Date();
+          L.motd=motd[(now.getMonth()+1)+'-'+now.getDate()]||'';
+        }
+      }catch(e){}
+      if(!L.motd)L.motd='welcome to sonic\'s schoolhouse';
+      installBoard(L,1100,L.motd,'');
+      playLevelMusic(L.levelName);
       hud();
       s=findSpawn(L)||{x:info.startX+0.5,y:info.startY+0.5,a:-info.heading*Math.PI*2/256};
       $('msg').textContent='textures found: '+texBytes.size+' of '+need.size+', things in level: '+L.sprites.length;
@@ -1257,8 +1699,8 @@ function ui(){
       if(r)$('msg').textContent=r;
       hud();
     }
-    if(e.code==='KeyR'&&!e.repeat&&L&&L.game&&!L.game.over){
-      const pr=L.game.probs[problemIndex(L.game)];
+    if(e.code==='KeyR'&&!e.repeat&&L&&L.game&&!L.game.over&&selIndex(L.game)>=0){
+      const pr=L.game.probs[selIndex(L.game)];
       if(pr.snd>=0)L.say(soundName(pr.snd));
     }
     if(e.code==='KeyP'&&!e.repeat&&L)togglePause();
@@ -1270,6 +1712,7 @@ function ui(){
   window.addEventListener('keyup',e=>keys.delete(e.code));
 
   function stopGame(){
+    stopMusic();
     L=null;
     paused=false;
     hudMain='';
@@ -1282,6 +1725,7 @@ function ui(){
 
   function togglePause(){
     paused=!paused;
+    if(actx){if(paused)actx.suspend();else actx.resume()}
     $('msg').textContent=paused?'game paused, press p or the green light to go on':'';
   }
 
@@ -1323,7 +1767,9 @@ function ui(){
         step(L,s,fwd,turn,strafe,dt,ghost);
         animate(L,dt,s);
         L.player=s;
+        L.playTime+=dt;
         state.mask|=L.mask;
+        if((state.mask|(player().mask||0))!==(player().mask||0)){player().mask=state.mask;savePlayers()}
       }
       $('pos').textContent='position x '+s.x.toFixed(1)+', y '+s.y.toFixed(1)+', facing '+Math.round((((-s.a*256/(2*Math.PI))%256)+256)%256);
       const note=(paused?'':autoActions(L,s))||L.note;
